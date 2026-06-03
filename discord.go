@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -112,16 +113,28 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	handle := normalizeHandle(args)
 	if handle == "" {
-		s.ChannelMessageSend(m.ChannelID, "❌ Please provide a Twitter handle. Usage: `"+b.config.BotPrefix+" <handle>`")
+		s.ChannelMessageSend(m.ChannelID, "❌ Please provide a Twitter handle. Usage: `"+b.config.BotPrefix+" <handle> [limit]`")
 		return
 	}
 
 	switch command {
 	case "first":
-		b.handleFirstCommand(s, m, handle)
+		limit := b.parseLimit(args)
+		b.handleFirstCommand(s, m, handle, limit)
 	case "cek":
 		b.handleCekCommand(s, m, handle)
 	}
+}
+
+// parseLimit extracts a number from args (e.g. ".first handle 30" → 30)
+func (b *Bot) parseLimit(args string) int {
+	parts := strings.Fields(args)
+	for _, p := range parts {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 100 {
+			return n
+		}
+	}
+	return b.config.FirstFollowersLimit
 }
 
 func (b *Bot) isChannelAllowed(channelID, command string) bool {
@@ -184,8 +197,8 @@ func (b *Bot) setCooldown(userID string) {
 	b.cooldowns[userID] = time.Now()
 }
 
-// handleFirstCommand handles the .first command — deep crawl followers, find earliest ~20
-func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreate, handle string) {
+// handleFirstCommand handles the .first command — deep crawl followers, find earliest N
+func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreate, handle string, limit int) {
 	// Cooldown check
 	if onCooldown, remaining := b.checkCooldown(m.Author.ID); onCooldown {
 		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("⏳ Cooldown active. Please wait %s.", remaining.Round(time.Second)))
@@ -257,24 +270,24 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 		}
 	}
 
-	// Get the LAST 20 (oldest followers, since X returns newest first)
-	var top20 []XUser
-	if len(unique) > 20 {
-		top20 = unique[len(unique)-20:]
+	// Get the LAST N (oldest followers, since X returns newest first)
+	var topN []XUser
+	if len(unique) > limit {
+		topN = unique[len(unique)-limit:]
 	} else {
-		top20 = unique
+		topN = unique
 	}
 
 	// Reverse so oldest is first
-	for i, j := 0, len(top20)-1; i < j; i, j = i+1, j-1 {
-		top20[i], top20[j] = top20[j], top20[i]
+	for i, j := 0, len(topN)-1; i < j; i, j = i+1, j-1 {
+		topN[i], topN[j] = topN[j], topN[i]
 	}
 
 	requester := m.Author.Username
 	if m.Member != nil && m.Member.Nick != "" {
 		requester = m.Member.Nick
 	}
-	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, top20, elapsed, requester, m.Author.AvatarURL("400x400"))
+	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, topN, elapsed, requester, m.Author.AvatarURL("400x400"))
 	s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed)
 	b.setCooldown(m.Author.ID)
 }
@@ -371,12 +384,12 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 }
 
 // buildFollowersEmbed builds the gold embed for the .first command result
-func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, top20 []XUser, elapsed time.Duration, requestedBy string, requesterAvatarURL string) *discordgo.MessageEmbed {
+func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, topN []XUser, elapsed time.Duration, requestedBy string, requesterAvatarURL string) *discordgo.MessageEmbed {
 	description := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:",
-		name, handle, handle, formatNumber(followersCount), len(top20))
+		name, handle, handle, formatNumber(followersCount), len(topN))
 
 	var fields []*discordgo.MessageEmbedField
-	for i, f := range top20 {
+	for i, f := range topN {
 		fields = append(fields, &discordgo.MessageEmbedField{
 			Name:   fmt.Sprintf("%d.", i+1),
 			Value:  fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers",

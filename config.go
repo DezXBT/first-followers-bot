@@ -37,6 +37,8 @@ type Config struct {
 
 	FirstCooldownMs int
 
+	FirstFollowersLimit int
+
 	Timezone string
 	LogLevel string
 }
@@ -61,6 +63,7 @@ func LoadConfig() (*Config, error) {
 		DeepDelayMs:           envInt("DEEP_DELAY_MS", 1500),
 		ProgressUpdateMs:      envInt("PROGRESS_UPDATE_MS", 15000),
 		FirstCooldownMs:       envInt("FIRST_COOLDOWN_MS", 90000),
+		FirstFollowersLimit:   envInt("FIRST_FOLLOWERS_LIMIT", 20),
 		Timezone:              envDefault("TIMEZONE", "Asia/Jakarta"),
 		LogLevel:              envDefault("LOG_LEVEL", "info"),
 	}
