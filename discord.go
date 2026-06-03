@@ -376,10 +376,7 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, history []UsernameHi
 	var description string
 
 	if about != nil {
-		smartCount := ""
-		if len(smartFollowers) > 0 {
-			smartCount = fmt.Sprintf(" | Smart: %s", formatNumber(len(smartFollowers)))
-		}
+		smartCount := fmt.Sprintf(" | Smart: %s", formatNumber(len(smartFollowers)))
 		verifiedStr := "❌"
 		if about.Verified {
 			verifiedStr = "✅"
