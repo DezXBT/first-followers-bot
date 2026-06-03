@@ -33,11 +33,14 @@ type XUser struct {
 }
 
 type AboutProfile struct {
-	Verified    bool   `json:"verified"`
-	Description string `json:"description"`
-	Followers   int    `json:"followers"`
-	Following   int    `json:"following"`
-	CreatedAt   string `json:"created_at"`
+	IsBlueVerified  bool   `json:"is_blue_verified"`
+	Followers       int    `json:"followers"`
+	CreatedAt       string `json:"created_at"`
+	AccountBasedIn  string `json:"account_based_in"`
+	Source          string `json:"source"`
+	UsernameChanges int    `json:"username_changes"`
+	AvatarURL       string `json:"avatar_url"`
+	Name            string `json:"name"`
 }
 
 type TwitterClient struct {
@@ -449,7 +452,7 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 // GetAboutAccount fetches account info via the AboutAccountQuery.
 func (tc *TwitterClient) GetAboutAccount(screenName string) (*AboutProfile, error) {
 	variables := map[string]interface{}{
-		"screen_name": screenName,
+		"screenName": screenName,
 	}
 	features := map[string]interface{}{
 		"responsive_web_graphql_exclude_directive_enabled":                 true,
@@ -469,16 +472,22 @@ func (tc *TwitterClient) GetAboutAccount(screenName string) (*AboutProfile, erro
 		Data struct {
 			UserResultByScreenName struct {
 				Result struct {
-					Legacy struct {
-						Description     string `json:"description"`
-						FollowersCount  int    `json:"followers_count"`
-						FriendsCount    int    `json:"friends_count"`
-						CreatedAt       string `json:"created_at"`
-					} `json:"legacy"`
-					IsVerified    bool `json:"is_verified"`
-					Verification  struct {
-						Verified bool `json:"verified"`
-					} `json:"verification"`
+					AboutProfile struct {
+						AccountBasedIn string `json:"account_based_in"`
+						Source         string `json:"source"`
+						UsernameChanges struct {
+							Count string `json:"count"`
+						} `json:"username_changes"`
+					} `json:"about_profile"`
+					Core struct {
+						CreatedAt  string `json:"created_at"`
+						Name       string `json:"name"`
+						ScreenName string `json:"screen_name"`
+					} `json:"core"`
+					Avatar struct {
+						ImageURL string `json:"image_url"`
+					} `json:"avatar"`
+					IsBlueVerified bool `json:"is_blue_verified"`
 				} `json:"result"`
 			} `json:"user_result_by_screen_name"`
 		} `json:"data"`
@@ -490,11 +499,20 @@ func (tc *TwitterClient) GetAboutAccount(screenName string) (*AboutProfile, erro
 	}
 
 	result := resp.Data.UserResultByScreenName.Result
+
+	// Parse username_changes count (string from API, convert to int)
+	ucCount := 0
+	if n, err := fmt.Sscanf(result.AboutProfile.UsernameChanges.Count, "%d", &ucCount); err != nil || n == 0 {
+		ucCount = 0
+	}
+
 	return &AboutProfile{
-		Verified:    result.IsVerified || result.Verification.Verified,
-		Description: result.Legacy.Description,
-		Followers:   result.Legacy.FollowersCount,
-		Following:   result.Legacy.FriendsCount,
-		CreatedAt:   result.Legacy.CreatedAt,
+		IsBlueVerified:  result.IsBlueVerified,
+		CreatedAt:       result.Core.CreatedAt,
+		AccountBasedIn:  result.AboutProfile.AccountBasedIn,
+		Source:          result.AboutProfile.Source,
+		UsernameChanges: ucCount,
+		AvatarURL:       result.Avatar.ImageURL,
+		Name:            result.Core.Name,
 	}, nil
 }

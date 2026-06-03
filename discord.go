@@ -270,7 +270,11 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 		top20[i], top20[j] = top20[j], top20[i]
 	}
 
-	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, top20, elapsed)
+	requester := m.Author.Username
+	if m.Member != nil && m.Member.Nick != "" {
+		requester = m.Member.Nick
+	}
+	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, top20, elapsed, requester, m.Author.AvatarURL("400x400"))
 	s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed)
 	b.setCooldown(m.Author.ID)
 }
@@ -295,6 +299,10 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 		smartFollowers []SmartFollower
 		err            error
 	}
+	type frInfoResult struct {
+		followers int
+		err       error
+	}
 	type xResult struct {
 		about *AboutProfile
 		err   error
@@ -303,6 +311,7 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 	frHistoryCh := make(chan frHistoryResult, 1)
 	frBioCh := make(chan frBioResult, 1)
 	frSmartCh := make(chan frSmartResult, 1)
+	frInfoCh := make(chan frInfoResult, 1)
 	xCh := make(chan xResult, 1)
 
 	go func() {
@@ -318,6 +327,18 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 		frSmartCh <- frSmartResult{smartFollowers, err}
 	}()
 	go func() {
+		info, err := b.frontrun.GetUserInfo(handle)
+		followers := 0
+		if err == nil {
+			if data, ok := info["data"].(map[string]interface{}); ok {
+				if f, ok := data["followersCount"].(float64); ok {
+					followers = int(f)
+				}
+			}
+		}
+		frInfoCh <- frInfoResult{followers, err}
+	}()
+	go func() {
 		about, err := b.twitter.GetAboutAccount(handle)
 		xCh <- xResult{about, err}
 	}()
@@ -325,19 +346,32 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 	frHistory := <-frHistoryCh
 	frBio := <-frBioCh
 	frSmart := <-frSmartCh
+	frInfo := <-frInfoCh
 	xr := <-xCh
 
 	var aboutProfile *AboutProfile
 	if xr.err == nil {
 		aboutProfile = xr.about
+		aboutProfile.Followers = frInfo.followers
 	}
 
-	embed := b.buildUsernameHistoryEmbed(m.Author.Username, frHistory.history, frBio.bioHistory, frSmart.smartFollowers, aboutProfile)
-	s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed)
+	fmt.Printf("[cek] history err=%v bio err=%v smart err=%v (smart count=%d) info err=%v (followers=%d) x err=%v\n",
+		frHistory.err, frBio.err, frSmart.err, len(frSmart.smartFollowers), frInfo.err, frInfo.followers, xr.err)
+
+	// Get requester for footer
+	requester := m.Author.Username
+	if m.Member != nil && m.Member.Nick != "" {
+		requester = m.Member.Nick
+	}
+	embed := b.buildUsernameHistoryEmbed(requester, handle, frHistory.history, frBio.bioHistory, frSmart.smartFollowers, aboutProfile, m.Author.AvatarURL("400x400"))
+	if _, err := s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed); err != nil {
+		fmt.Printf("[cek] ERROR edit embed: %v\n", err)
+		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Error: %v", err))
+	}
 }
 
 // buildFollowersEmbed builds the gold embed for the .first command result
-func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, top20 []XUser, elapsed time.Duration) *discordgo.MessageEmbed {
+func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, top20 []XUser, elapsed time.Duration, requestedBy string, requesterAvatarURL string) *discordgo.MessageEmbed {
 	description := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:",
 		name, handle, handle, formatNumber(followersCount), len(top20))
 
@@ -350,7 +384,7 @@ func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int
 		})
 	}
 
-	footer := b.makeFooter()
+	footer := b.makeFooter(requestedBy, requesterAvatarURL)
 	embed := &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("🏆 %s", name),
 		Description: description,
@@ -371,43 +405,95 @@ func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int
 	return embed
 }
 
-// buildUsernameHistoryEmbed builds the blurple embed for the .cek command result
-func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, history []UsernameHistoryEntry, bioHistory []BioHistoryEntry, smartFollowers []SmartFollower, about *AboutProfile) *discordgo.MessageEmbed {
+// buildUsernameHistoryEmbed builds the embed for the .cek command result
+func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, history []UsernameHistoryEntry, bioHistory []BioHistoryEntry, smartFollowers []SmartFollower, about *AboutProfile, requesterAvatarURL string) *discordgo.MessageEmbed {
 	var description string
-
-	if about != nil {
-		smartCount := fmt.Sprintf(" | Smart: %s", formatNumber(len(smartFollowers)))
-		verifiedStr := "❌"
-		if about.Verified {
-			verifiedStr = "✅"
+	fmtNum := func(n int) string {
+		if n == 0 {
+			return "0"
 		}
-		description = fmt.Sprintf("**Verified:** %s | **Followers:** %s | **Following:** %s%s\n**Created:** %s\n",
-			verifiedStr, formatNumber(about.Followers), formatNumber(about.Following), smartCount, about.CreatedAt)
-		if about.Description != "" {
-			desc := about.Description
-			if len(desc) > 200 {
-				desc = desc[:197] + "..."
+		s := fmt.Sprintf("%d", n)
+		var result []byte
+		for i, c := range s {
+			if i > 0 && (len(s)-i)%3 == 0 {
+				result = append(result, ',')
 			}
-			description += fmt.Sprintf("**Bio:** %s\n", desc)
+			result = append(result, byte(c))
 		}
-		description += "\n"
+		return string(result)
 	}
 
-	description += "**Username History:**\n"
+	// Try to parse date strings into Discord timestamps
+	toDiscordTS := func(dateStr string) string {
+		// Try various date formats
+		formats := []string{
+			time.RubyDate, // "Sat May 01 12:55:14 +0000 2021"
+			"January 2, 2006 3:04 PM",
+			"January 2, 2006",
+			"2006-01-02T15:04:05Z",
+			"2006-01-02 15:04:05",
+		}
+		for _, f := range formats {
+			t, err := time.Parse(f, dateStr)
+			if err == nil {
+				return fmt.Sprintf("<t:%d:f>", t.Unix())
+			}
+		}
+		return dateStr // fallback
+	}
+	toDiscordDate := func(dateStr string) string {
+		formats := []string{
+			time.RubyDate,
+			"January 2, 2006 3:04 PM",
+			"January 2, 2006",
+			"2006-01-02T15:04:05Z",
+			"2006-01-02 15:04:05",
+		}
+		for _, f := range formats {
+			t, err := time.Parse(f, dateStr)
+			if err == nil {
+				return fmt.Sprintf("<t:%d:D>", t.Unix())
+			}
+		}
+		return dateStr
+	}
+
+	// Profile stats section
+	description += fmt.Sprintf("**[@%s](https://x.com/%s)**\n\n", handle, handle)
+
+	if about != nil {
+		description += fmt.Sprintf("📊 Followers: **%s**\n", fmtNum(about.Followers))
+		description += fmt.Sprintf("🧠 Smart Followers: **%s**\n", fmtNum(len(smartFollowers)))
+		if about.AccountBasedIn != "" {
+			description += fmt.Sprintf("🌍 Account Based In: **%s**\n", about.AccountBasedIn)
+		}
+		if about.Source != "" {
+			description += fmt.Sprintf("📱 Source: **%s**\n", about.Source)
+		}
+		if about.CreatedAt != "" {
+			description += fmt.Sprintf("📅 Created: %s\n", toDiscordDate(about.CreatedAt))
+		}
+		description += fmt.Sprintf("🔄 Username Changes: **%d**\n", about.UsernameChanges)
+		description += fmt.Sprintf("📝 Bio Changes: **%d**\n\n", len(bioHistory))
+	}
+
+	// Username History
+	description += "**📋 Username History**\n"
 	if len(history) == 0 {
 		description += "No username changes found.\n"
 	} else {
 		sort.Slice(history, func(i, j int) bool {
 			return history[i].ChangedAt < history[j].ChangedAt
 		})
-		for _, h := range history {
-			description += fmt.Sprintf("• **@%s** — %s\n", h.OldUsername, h.ChangedAt)
+		for i, h := range history {
+			ts := toDiscordTS(h.ChangedAt)
+			description += fmt.Sprintf("%d. **@%s** — %s\n", i+1, h.OldUsername, ts)
 		}
 	}
 
+	// Bio History (last 5)
 	if len(bioHistory) > 0 {
-		description += "\n**Bio History:**\n"
-		// Show last 5 bio changes (most recent first)
+		description += "\n**📝 Bio History (latest 5)**\n"
 		sort.Slice(bioHistory, func(i, j int) bool {
 			return bioHistory[i].LastChecked > bioHistory[j].LastChecked
 		})
@@ -415,32 +501,66 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, history []UsernameHi
 		if len(bioHistory) < maxBio {
 			maxBio = len(bioHistory)
 		}
-		for _, bh := range bioHistory[:maxBio] {
+		for i, bh := range bioHistory[:maxBio] {
 			bio := bh.Bio
 			if len(bio) > 120 {
 				bio = bio[:117] + "..."
 			}
 			if bio == "" {
-				bio = "(empty)"
+				bio = "*empty*"
 			}
-			description += fmt.Sprintf("• %s — %s\n", bio, bh.LastChecked)
+			ts := toDiscordTS(bh.LastChecked)
+			description += fmt.Sprintf("%d. %s — %s\n", i+1, bio, ts)
 		}
 	}
 
-	footer := b.makeFooter()
-	return &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("📋 Username History: @%s", requestedBy),
+	// Top Smart Followers (by SF count)
+	if len(smartFollowers) > 0 {
+		description += "\n**🏆 Top Smart Followers (by SF)**\n"
+		sort.Slice(smartFollowers, func(i, j int) bool {
+			return smartFollowers[i].SmartFollowersCount > smartFollowers[j].SmartFollowersCount
+		})
+		maxSF := 5
+		if len(smartFollowers) < maxSF {
+			maxSF = len(smartFollowers)
+		}
+		for i, sf := range smartFollowers[:maxSF] {
+			description += fmt.Sprintf("%d. **@%s** | %s SF | %s followers\n",
+				i+1, sf.Twitter, fmtNum(sf.SmartFollowersCount), fmtNum(sf.FollowersCount))
+		}
+	}
+
+	title := fmt.Sprintf("📋 Username Check: @%s", handle)
+	if about != nil && about.Name != "" {
+		title = fmt.Sprintf("📋 Username Check: %s", about.Name)
+	}
+	footer := b.makeFooter(requestedBy, requesterAvatarURL)
+	embed := &discordgo.MessageEmbed{
+		Title:       title,
 		Description: description,
-		Color:       ColorBlurple,
+		Color:       ColorGold,
 		Footer:      footer,
 	}
+	if about != nil && about.AvatarURL != "" {
+		hires := strings.Replace(about.AvatarURL, "_normal", "_400x400", 1)
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: hires}
+	}
+	return embed
 }
 
-func (b *Bot) makeFooter() *discordgo.MessageEmbedFooter {
+func (b *Bot) makeFooter(requestedBy string, avatarURL string) *discordgo.MessageEmbedFooter {
 	now := time.Now().In(b.timezone)
-	return &discordgo.MessageEmbedFooter{
-		Text: fmt.Sprintf("X-Tracker-Bot | %s", now.Format("02/01/2006, 15:04:05")),
+	text := fmt.Sprintf("Requested by %s • %dm cooldown | Today at %s", requestedBy, b.config.FirstCooldownMs/60000, now.Format("15:04"))
+	if requestedBy == "" {
+		text = now.Format("02/01/2006, 15:04")
 	}
+	footer := &discordgo.MessageEmbedFooter{
+		Text: text,
+	}
+	if avatarURL != "" {
+		footer.IconURL = avatarURL
+	}
+	return footer
 }
 
 func normalizeHandle(input string) string {
