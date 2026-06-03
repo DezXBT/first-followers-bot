@@ -270,7 +270,7 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 		top20[i], top20[j] = top20[j], top20[i]
 	}
 
-	embed := b.buildFollowersEmbed(handle, user.FollowersCount, top20, elapsed)
+	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, top20, elapsed)
 	s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed)
 	b.setCooldown(m.Author.ID)
 }
@@ -318,26 +318,38 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 }
 
 // buildFollowersEmbed builds the gold embed for the .first command result
-func (b *Bot) buildFollowersEmbed(handle string, followersCount int, top20 []XUser, elapsed time.Duration) *discordgo.MessageEmbed {
-	description := fmt.Sprintf("**@%s** has **%d** followers\n\n**Oldest %d Followers** (crawled in %s):",
-		handle, followersCount, len(top20), elapsed.Round(time.Second))
+func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, top20 []XUser, elapsed time.Duration) *discordgo.MessageEmbed {
+	description := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:",
+		name, handle, handle, formatNumber(followersCount), len(top20))
 
 	var fields []*discordgo.MessageEmbedField
 	for i, f := range top20 {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  fmt.Sprintf("%d. @%s", i+1, f.ScreenName),
-			Value: fmt.Sprintf("ID: `%s`", f.ID),
+			Name:   fmt.Sprintf("%d.", i+1),
+			Value:  fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers",
+				f.Name, f.ScreenName, f.ScreenName, formatNumber(f.FollowersCount)),
 		})
 	}
 
 	footer := b.makeFooter()
-	return &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("🏆 First Followers of @%s", handle),
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("🏆 %s", name),
 		Description: description,
 		Color:       ColorGold,
 		Fields:      fields,
 		Footer:      footer,
 	}
+
+	if profileImageURL != "" {
+		// Replace _normal with _400x400 for better embed display
+		hires := strings.Replace(profileImageURL, "_normal", "_400x400", 1)
+		fmt.Printf("[embed] profile image: %s -> %s\n", profileImageURL, hires)
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: hires}
+	} else {
+		fmt.Printf("[embed] profile image URL is EMPTY for @%s\n", handle)
+	}
+
+	return embed
 }
 
 // buildUsernameHistoryEmbed builds the blurple embed for the .cek command result
@@ -399,4 +411,19 @@ func parseCommand(content, prefix string) (string, bool) {
 		return strings.TrimSpace(content[len(prefix):]), true
 	}
 	return "", false
+}
+
+func formatNumber(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var result []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(c))
+	}
+	return string(result)
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -101,6 +102,12 @@ func (tc *TwitterClient) xRequest(apiPath string, params url.Values, result inte
 		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, u, string(body))
 	}
 
+	// Debug: dump raw response for UserByScreenName
+	if strings.Contains(apiPath, "UserByScreenName") {
+		os.WriteFile("/tmp/getuser_raw.json", body, 0644)
+		fmt.Printf("[xRequest] Raw response saved (%d bytes)\n", len(body))
+	}
+
 	return json.Unmarshal(body, result)
 }
 
@@ -161,18 +168,46 @@ func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 		"withSafetyModeUserFields":     true,
 	}
 	features := map[string]interface{}{
-		"hidden_profile_subscriptions_enabled":                              true,
-		"rweb_tipjar_consumption_enabled":                                  true,
-		"responsive_web_graphql_exclude_directive_enabled":                 true,
-		"verified_phone_label_enabled":                                     false,
-		"subscriptions_verification_info_is_identity_verified_enabled":     true,
-		"subscriptions_verification_info_verified_since_enabled":           true,
-		"highlights_tweets_tab_ui_enabled":                                 true,
-		"responsive_web_twitter_article_notes_tab_enabled":                 true,
-		"subscriptions_feature_can_gift_premium":                           true,
-		"creator_subscriptions_tweet_preview_api_enabled":                  true,
-		"responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-		"responsive_web_graphql_timeline_navigation_enabled":               true,
+		"rweb_tipjar_consumption_enabled":                                     true,
+		"responsive_web_graphql_exclude_directive_enabled":                    true,
+		"verified_phone_label_enabled":                                        false,
+		"creator_subscriptions_tweet_preview_api_enabled":                     true,
+		"responsive_web_graphql_timeline_navigation_enabled":                  true,
+		"responsive_web_graphql_skip_user_profile_image_extensions_enabled":   false,
+		"communities_web_enable_tweet_community_results_fetch":                true,
+		"c9s_tweet_anatomy_moderator_badge_enabled":                           true,
+		"articles_preview_enabled":                                            true,
+		"tweetypie_unmention_optimization_enabled":                            true,
+		"responsive_web_edit_tweet_api_enabled":                               true,
+		"graphql_is_translatable_rweb_tweet_is_translatable_enabled":          true,
+		"view_counts_everywhere_api_enabled":                                  true,
+		"longform_notetweets_consumption_enabled":                             true,
+		"responsive_web_twitter_article_tweet_consumption_enabled":            true,
+		"tweet_awards_web_tipping_enabled":                                    false,
+		"creator_subscriptions_quote_tweet_preview_enabled":                   false,
+		"freedom_of_speech_not_reach_fetch_enabled":                           true,
+		"standardized_nudges_misinfo":                                         true,
+		"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": true,
+		"rweb_video_timestamps_enabled":                                       true,
+		"longform_notetweets_rich_text_read_enabled":                          true,
+		"longform_notetweets_inline_media_enabled":                            true,
+		"responsive_web_enhance_cards_enabled":                                false,
+		"responsive_web_twitter_article_notes_tab_enabled":                    true,
+		"subscriptions_verification_info_verified_since_enabled":              true,
+		"subscriptions_verification_info_is_identity_verified_enabled":        true,
+		"highlights_tweets_tab_ui_enabled":                                    true,
+		"profile_label_improvements_pcf_label_in_post_enabled":                true,
+		"hidden_profile_subscriptions_enabled":                                true,
+		"subscriptions_feature_can_gift_premium":                              true,
+		"responsive_web_grok_show_grok_translated_post":                       true,
+		"responsive_web_grok_analyze_post_followups_enabled":                  true,
+		"premium_content_api_read_enabled":                                    true,
+		"responsive_web_grok_image_annotation_enabled":                        true,
+		"responsive_web_grok_share_attachment_enabled":                        true,
+		"responsive_web_grok_analysis_button_from_backend":                    true,
+		"responsive_web_grok_analyze_button_fetch_trends_enabled":             true,
+		"rweb_video_screen_enabled":                                           true,
+		"responsive_web_jetfuel_frame":                                        true,
 	}
 
 	varsJSON, _ := json.Marshal(variables)
@@ -194,6 +229,9 @@ func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 						Name       string `json:"name"`
 						CreatedAt  string `json:"created_at"`
 					} `json:"core"`
+					Avatar struct {
+						ImageURL string `json:"image_url"`
+					} `json:"avatar"`
 					Legacy struct {
 						FollowersCount  int    `json:"followers_count"`
 						FriendsCount    int    `json:"friends_count"`
@@ -232,7 +270,12 @@ func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 		created = result.Legacy.CreatedAt
 	}
 	followers := result.Legacy.FollowersCount
-	imgURL := result.Legacy.ProfileImageURL
+
+	// Profile image: new API uses avatar.image_url instead of legacy.profile_image_url_https
+	imgURL := result.Avatar.ImageURL
+	if imgURL == "" {
+		imgURL = result.Legacy.ProfileImageURL // fallback
+	}
 
 	return &XUser{
 		ID:              result.RestID,
@@ -296,6 +339,9 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 															Name       string `json:"name"`
 															CreatedAt  string `json:"created_at"`
 														} `json:"core"`
+														Avatar struct {
+															ImageURL string `json:"image_url"`
+														} `json:"avatar"`
 														Legacy struct {
 															ScreenName      string `json:"screen_name"`
 															FollowersCount  int    `json:"followers_count"`
@@ -377,7 +423,7 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 							ScreenName:      sn,
 							FollowersCount:  u.Legacy.FollowersCount,
 							CreatedAt:       created,
-							ProfileImageURL: u.Legacy.ProfileImageURL,
+							ProfileImageURL: u.Avatar.ImageURL,
 							Name:            name,
 						})
 					}
