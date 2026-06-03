@@ -111,7 +111,17 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	handle := normalizeHandle(args)
+	// For .first, extract limit first so we strip the number from args before normalizing the handle
+	var handle string
+	var limit int
+	switch command {
+	case "first":
+		limit = b.parseLimit(args)
+		args = b.stripLimit(args)
+		handle = normalizeHandle(args)
+	default:
+		handle = normalizeHandle(args)
+	}
 	if handle == "" {
 		s.ChannelMessageSend(m.ChannelID, "❌ Please provide a Twitter handle. Usage: `"+b.config.BotPrefix+" <handle> [limit]`")
 		return
@@ -119,7 +129,6 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	switch command {
 	case "first":
-		limit := b.parseLimit(args)
 		b.handleFirstCommand(s, m, handle, limit)
 	case "cek":
 		b.handleCekCommand(s, m, handle)
@@ -136,6 +145,19 @@ func (b *Bot) parseLimit(args string) int {
 		}
 	}
 	return b.config.FirstFollowersLimit
+}
+
+// stripLimit removes the trailing standalone number (limit) from args so normalizeHandle gets a clean handle.
+// Only strips tokens that are purely numeric (won't strip numbers embedded in URLs).
+func (b *Bot) stripLimit(args string) string {
+	parts := strings.Fields(args)
+	for i := len(parts) - 1; i >= 0; i-- {
+		if _, err := strconv.Atoi(parts[i]); err == nil && !strings.Contains(parts[i], "/") && !strings.Contains(parts[i], ":") {
+			parts = append(parts[:i], parts[i+1:]...)
+			return strings.TrimSpace(strings.Join(parts, " "))
+		}
+	}
+	return args
 }
 
 func (b *Bot) isChannelAllowed(channelID, command string) bool {
