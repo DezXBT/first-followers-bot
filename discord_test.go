@@ -52,6 +52,21 @@ func TestMatchPrefix(t *testing.T) {
 	}
 }
 
+func TestLinkifyMentions(t *testing.T) {
+	cases := map[string]string{
+		"gm @elonmusk follow":  "gm [@elonmusk](https://x.com/elonmusk) follow",
+		"@jack at start":       "[@jack](https://x.com/jack) at start",
+		"no mentions here":     "no mentions here",
+		"email me@gmail.com ok": "email me@gmail.com ok", // not preceded by boundary → not linkified
+		"two @a and @b":        "two [@a](https://x.com/a) and [@b](https://x.com/b)",
+	}
+	for in, want := range cases {
+		if got := linkifyMentions(in); got != want {
+			t.Errorf("linkifyMentions(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
 func TestNormalizeHandle(t *testing.T) {
 	cases := map[string]string{
 		"@elonmusk":                    "elonmusk",

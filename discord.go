@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -474,7 +475,7 @@ func (b *Bot) buildFollowersEmbeds(handle string, name string, followersCount in
 		cur.WriteString(line)
 	}
 
-	footer := b.makeFooter(requestedBy, requesterAvatarURL)
+	footer := b.makeFooter(requestedBy, requesterAvatarURL, true)
 	total := len(chunks)
 	embeds := make([]*discordgo.MessageEmbed, 0, total)
 	for idx, c := range chunks {
@@ -598,11 +599,14 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, histo
 		}
 		for i, bh := range bioHistory[:maxBio] {
 			bio := bh.Bio
-			if len(bio) > 120 {
-				bio = bio[:117] + "..."
+			// Rune-safe truncation so emojis/multibyte chars in bios aren't corrupted.
+			if r := []rune(bio); len(r) > 120 {
+				bio = string(r[:117]) + "..."
 			}
 			if bio == "" {
 				bio = "*empty*"
+			} else {
+				bio = linkifyMentions(bio) // make @accounts mentioned in the bio clickable
 			}
 			ts := toDiscordTS(bh.LastChecked)
 			description += fmt.Sprintf("%d. %s — %s\n", i+1, bio, ts)
@@ -620,8 +624,8 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, histo
 			maxSF = len(smartFollowers)
 		}
 		for i, sf := range smartFollowers[:maxSF] {
-			description += fmt.Sprintf("%d. **@%s** | %s SF | %s followers\n",
-				i+1, sf.Twitter, fmtNum(sf.SmartFollowersCount), fmtNum(sf.FollowersCount))
+			description += fmt.Sprintf("%d. **[@%s](https://x.com/%s)** | %s SF | %s followers\n",
+				i+1, sf.Twitter, sf.Twitter, fmtNum(sf.SmartFollowersCount), fmtNum(sf.FollowersCount))
 		}
 	}
 
@@ -629,7 +633,7 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, histo
 	if about != nil && about.Name != "" {
 		title = fmt.Sprintf("📋 Username Check: %s", about.Name)
 	}
-	footer := b.makeFooter(requestedBy, requesterAvatarURL)
+	footer := b.makeFooter(requestedBy, requesterAvatarURL, false)
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
 		Description: description,
@@ -643,11 +647,18 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, histo
 	return embed
 }
 
-func (b *Bot) makeFooter(requestedBy string, avatarURL string) *discordgo.MessageEmbedFooter {
+// makeFooter builds the embed footer. withCooldown controls whether the cooldown notice is shown —
+// only the .first command has a cooldown, so .cek passes false.
+func (b *Bot) makeFooter(requestedBy string, avatarURL string, withCooldown bool) *discordgo.MessageEmbedFooter {
 	now := time.Now().In(b.timezone)
-	text := fmt.Sprintf("Requested by %s • %dm cooldown | Today at %s", requestedBy, b.config.FirstCooldownMs/60000, now.Format("15:04"))
-	if requestedBy == "" {
+	var text string
+	switch {
+	case requestedBy == "":
 		text = now.Format("02/01/2006, 15:04")
+	case withCooldown:
+		text = fmt.Sprintf("Requested by %s • %dm cooldown | Today at %s", requestedBy, b.config.FirstCooldownMs/60000, now.Format("15:04"))
+	default:
+		text = fmt.Sprintf("Requested by %s | Today at %s", requestedBy, now.Format("15:04"))
 	}
 	footer := &discordgo.MessageEmbedFooter{
 		Text: text,
@@ -656,6 +667,15 @@ func (b *Bot) makeFooter(requestedBy string, avatarURL string) *discordgo.Messag
 		footer.IconURL = avatarURL
 	}
 	return footer
+}
+
+// linkifyMentions converts @handle mentions in free text into clickable x.com markdown links.
+// It only matches an @ at the start of the string or preceded by a non-handle character, so
+// things like email addresses aren't turned into links.
+var mentionRe = regexp.MustCompile(`(^|[^0-9A-Za-z_])@(\w{1,15})`)
+
+func linkifyMentions(s string) string {
+	return mentionRe.ReplaceAllString(s, `${1}[@${2}](https://x.com/${2})`)
 }
 
 func normalizeHandle(input string) string {
