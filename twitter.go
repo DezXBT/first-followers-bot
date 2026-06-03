@@ -320,6 +320,12 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 
 		apiPath := fmt.Sprintf("%s/Followers", tc.followersHash)
 		if err := tc.xPostRequest(apiPath, reqBody, &resp); err != nil {
+			// Rate limit: wait and retry same page
+			if strings.Contains(err.Error(), "429") {
+				fmt.Printf("[rate-limit] Page %d hit 429, waiting 60s...\n", page)
+				time.Sleep(60 * time.Second)
+				continue // retry same page
+			}
 			// If this hash fails, try the next known hash
 			if page == 0 {
 				recovered := false
