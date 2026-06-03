@@ -318,8 +318,6 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 		return
 	}
 
-	elapsed := time.Since(startTime)
-
 	// Deduplicate followers
 	seen := make(map[string]bool)
 	var unique []XUser
@@ -347,10 +345,18 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 	if m.Member != nil && m.Member.Nick != "" {
 		requester = m.Member.Nick
 	}
-	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, topN, elapsed, requester, m.Author.AvatarURL("400x400"))
-	if _, err := s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed); err != nil {
+	embeds := b.buildFollowersEmbeds(handle, user.Name, user.FollowersCount, user.ProfileImageURL, topN, requester, m.Author.AvatarURL("400x400"))
+	// Edit the original message with the first page; send any remaining pages as follow-up
+	// messages (a single message caps all embeds at 6000 chars, so long lists need separate messages).
+	if _, err := s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embeds[0]); err != nil {
 		fmt.Printf("[first] ERROR edit embed for @%s: %v\n", handle, err)
 		s.ChannelMessageEdit(m.ChannelID, msg.ID, fmt.Sprintf("❌ Could not render result for @%s: %v", handle, err))
+		return
+	}
+	for _, e := range embeds[1:] {
+		if _, err := s.ChannelMessageSendEmbed(m.ChannelID, e); err != nil {
+			fmt.Printf("[first] ERROR send continuation embed for @%s: %v\n", handle, err)
+		}
 	}
 }
 
@@ -446,47 +452,52 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 }
 
 // buildFollowersEmbed builds the gold embed for the .first command result.
-// The follower list is rendered as a numbered list inside the description rather than as embed
-// fields: Discord caps embeds at 25 fields, so a ".first <handle> 30" (or any N > 25) would
-// otherwise be rejected with HTTP 400. The list is also truncated to stay within Discord's
-// description character limit.
-func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, topN []XUser, elapsed time.Duration, requestedBy string, requesterAvatarURL string) *discordgo.MessageEmbed {
+// The follower list is rendered as a numbered, clickable list inside the embed description rather
+// than as embed fields: Discord caps embeds at 25 fields, so any N > 25 would be rejected with
+// HTTP 400. Because each embed description is also capped at 4096 chars, the list is paginated
+// across multiple embeds (sent as separate messages) so large limits like ".first 100" show fully.
+func (b *Bot) buildFollowersEmbeds(handle string, name string, followersCount int, profileImageURL string, topN []XUser, requestedBy string, requesterAvatarURL string) []*discordgo.MessageEmbed {
 	header := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:\n",
 		name, handle, handle, formatNumber(followersCount), len(topN))
 
-	var sb strings.Builder
-	sb.WriteString(header)
-	shown := 0
+	// Split entries into chunks that each stay within the per-embed description budget.
+	chunks := []*strings.Builder{{}}
+	chunks[0].WriteString(header)
 	for i, f := range topN {
 		line := fmt.Sprintf("%d. %s ([@%s](https://x.com/%s)) — %s followers\n",
 			i+1, f.Name, f.ScreenName, f.ScreenName, formatNumber(f.FollowersCount))
-		// Stop before exceeding the description budget so Discord never rejects the embed.
-		if sb.Len()+len(line) > discordDescBudget {
-			sb.WriteString(fmt.Sprintf("…and %d more (list truncated to fit).", len(topN)-shown))
-			break
+		cur := chunks[len(chunks)-1]
+		if cur.Len()+len(line) > discordDescBudget {
+			cur = &strings.Builder{}
+			chunks = append(chunks, cur)
 		}
-		sb.WriteString(line)
-		shown++
+		cur.WriteString(line)
 	}
 
 	footer := b.makeFooter(requestedBy, requesterAvatarURL)
-	embed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("🏆 %s", name),
-		Description: sb.String(),
-		Color:       ColorGold,
-		Footer:      footer,
+	total := len(chunks)
+	embeds := make([]*discordgo.MessageEmbed, 0, total)
+	for idx, c := range chunks {
+		title := fmt.Sprintf("🏆 %s", name)
+		if total > 1 {
+			title = fmt.Sprintf("🏆 %s (%d/%d)", name, idx+1, total)
+		}
+		e := &discordgo.MessageEmbed{
+			Title:       title,
+			Description: c.String(),
+			Color:       ColorGold,
+		}
+		// Footer (requester + cooldown) only on the last page; thumbnail only on the first.
+		if idx == total-1 {
+			e.Footer = footer
+		}
+		if idx == 0 && profileImageURL != "" {
+			hires := strings.Replace(profileImageURL, "_normal", "_400x400", 1)
+			e.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: hires}
+		}
+		embeds = append(embeds, e)
 	}
-
-	if profileImageURL != "" {
-		// Replace _normal with _400x400 for better embed display
-		hires := strings.Replace(profileImageURL, "_normal", "_400x400", 1)
-		fmt.Printf("[embed] profile image: %s -> %s\n", profileImageURL, hires)
-		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: hires}
-	} else {
-		fmt.Printf("[embed] profile image URL is EMPTY for @%s\n", handle)
-	}
-
-	return embed
+	return embeds
 }
 
 // buildUsernameHistoryEmbed builds the embed for the .cek command result
