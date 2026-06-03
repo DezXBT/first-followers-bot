@@ -283,29 +283,48 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 	}
 
 	// Parallel fetch
-	type frResult struct {
+	type frHistoryResult struct {
 		history []UsernameHistoryEntry
 		err     error
+	}
+	type frBioResult struct {
+		bioHistory []BioHistoryEntry
+		err        error
+	}
+	type frSmartResult struct {
+		smartFollowers []SmartFollower
+		err            error
 	}
 	type xResult struct {
 		about *AboutProfile
 		err   error
 	}
 
-	frCh := make(chan frResult, 1)
+	frHistoryCh := make(chan frHistoryResult, 1)
+	frBioCh := make(chan frBioResult, 1)
+	frSmartCh := make(chan frSmartResult, 1)
 	xCh := make(chan xResult, 1)
 
 	go func() {
 		history, err := b.frontrun.GetUsernameHistory(handle)
-		frCh <- frResult{history, err}
+		frHistoryCh <- frHistoryResult{history, err}
 	}()
-
+	go func() {
+		bioHistory, err := b.frontrun.GetBioHistory(handle)
+		frBioCh <- frBioResult{bioHistory, err}
+	}()
+	go func() {
+		smartFollowers, err := b.frontrun.GetSmartFollowers(handle)
+		frSmartCh <- frSmartResult{smartFollowers, err}
+	}()
 	go func() {
 		about, err := b.twitter.GetAboutAccount(handle)
 		xCh <- xResult{about, err}
 	}()
 
-	fr := <-frCh
+	frHistory := <-frHistoryCh
+	frBio := <-frBioCh
+	frSmart := <-frSmartCh
 	xr := <-xCh
 
 	var aboutProfile *AboutProfile
@@ -313,7 +332,7 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 		aboutProfile = xr.about
 	}
 
-	embed := b.buildUsernameHistoryEmbed(m.Author.Username, fr.history, aboutProfile)
+	embed := b.buildUsernameHistoryEmbed(m.Author.Username, frHistory.history, frBio.bioHistory, frSmart.smartFollowers, aboutProfile)
 	s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed)
 }
 
@@ -353,27 +372,61 @@ func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int
 }
 
 // buildUsernameHistoryEmbed builds the blurple embed for the .cek command result
-func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, history []UsernameHistoryEntry, about *AboutProfile) *discordgo.MessageEmbed {
+func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, history []UsernameHistoryEntry, bioHistory []BioHistoryEntry, smartFollowers []SmartFollower, about *AboutProfile) *discordgo.MessageEmbed {
 	var description string
 
 	if about != nil {
+		smartCount := ""
+		if len(smartFollowers) > 0 {
+			smartCount = fmt.Sprintf(" | Smart: %s", formatNumber(len(smartFollowers)))
+		}
 		verifiedStr := "❌"
 		if about.Verified {
 			verifiedStr = "✅"
 		}
-		description = fmt.Sprintf("**Verified:** %s\n**Followers:** %d\n**Following:** %d\n**Created:** %s\n**Bio:** %s\n\n",
-			verifiedStr, about.Followers, about.Following, about.CreatedAt, about.Description)
+		description = fmt.Sprintf("**Verified:** %s | **Followers:** %s | **Following:** %s%s\n**Created:** %s\n",
+			verifiedStr, formatNumber(about.Followers), formatNumber(about.Following), smartCount, about.CreatedAt)
+		if about.Description != "" {
+			desc := about.Description
+			if len(desc) > 200 {
+				desc = desc[:197] + "..."
+			}
+			description += fmt.Sprintf("**Bio:** %s\n", desc)
+		}
+		description += "\n"
 	}
 
 	description += "**Username History:**\n"
 	if len(history) == 0 {
-		description += "No username changes found."
+		description += "No username changes found.\n"
 	} else {
 		sort.Slice(history, func(i, j int) bool {
 			return history[i].ChangedAt < history[j].ChangedAt
 		})
 		for _, h := range history {
 			description += fmt.Sprintf("• **@%s** — %s\n", h.OldUsername, h.ChangedAt)
+		}
+	}
+
+	if len(bioHistory) > 0 {
+		description += "\n**Bio History:**\n"
+		// Show last 5 bio changes (most recent first)
+		sort.Slice(bioHistory, func(i, j int) bool {
+			return bioHistory[i].LastChecked > bioHistory[j].LastChecked
+		})
+		maxBio := 5
+		if len(bioHistory) < maxBio {
+			maxBio = len(bioHistory)
+		}
+		for _, bh := range bioHistory[:maxBio] {
+			bio := bh.Bio
+			if len(bio) > 120 {
+				bio = bio[:117] + "..."
+			}
+			if bio == "" {
+				bio = "(empty)"
+			}
+			description += fmt.Sprintf("• %s — %s\n", bio, bh.LastChecked)
 		}
 	}
 

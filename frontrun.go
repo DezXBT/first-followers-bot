@@ -13,6 +13,22 @@ type UsernameHistoryEntry struct {
 	ChangedAt   string `json:"changedAt"`
 }
 
+type BioHistoryEntry struct {
+	Bio         string `json:"bio"`
+	LastChecked string `json:"last_checked"`
+}
+
+type SmartFollower struct {
+	TwitterID          string `json:"twitterId"`
+	Name               string `json:"name"`
+	Twitter            string `json:"twitter"`
+	Bio                string `json:"bio"`
+	ProfilePhoto       string `json:"profilePhoto"`
+	FollowersCount     int    `json:"followersCount"`
+	SmartFollowersCount int   `json:"smartFollowersCount"`
+	FollowedAt         string `json:"followedAt"`
+}
+
 type FrontrunClient struct {
 	baseURL     string
 	token       string
@@ -81,6 +97,50 @@ func (fc *FrontrunClient) GetUsernameHistory(handle string) ([]UsernameHistoryEn
 		return []UsernameHistoryEntry{}, nil
 	}
 	return resp.Data.UsernameHistory, nil
+}
+
+// GetBioHistory fetches bio history for a handle.
+func (fc *FrontrunClient) GetBioHistory(handle string) ([]BioHistoryEntry, error) {
+	path := fmt.Sprintf("/api/v1/twitter/%s/bio-history", handle)
+	body, err := fc.request(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			BioHistory []BioHistoryEntry `json:"bioHistory"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse bio history: %w", err)
+	}
+	if resp.Data.BioHistory == nil {
+		return []BioHistoryEntry{}, nil
+	}
+	return resp.Data.BioHistory, nil
+}
+
+// GetSmartFollowers fetches smart followers for a handle.
+func (fc *FrontrunClient) GetSmartFollowers(handle string) ([]SmartFollower, error) {
+	path := fmt.Sprintf("/api/v1/twitter/%s/smart-followers", handle)
+	body, err := fc.request(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			SmartFollowers []SmartFollower `json:"smartFollowers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse smart followers: %w", err)
+	}
+	if resp.Data.SmartFollowers == nil {
+		return []SmartFollower{}, nil
+	}
+	return resp.Data.SmartFollowers, nil
 }
 
 // GetUserInfo fetches user info from Frontrun.
