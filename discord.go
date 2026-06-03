@@ -126,11 +126,12 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
-// parseLimit extracts a number from args (e.g. ".first handle 30" → 30)
+// parseLimit extracts a trailing number from args (e.g. ".first handle 30" → 30)
 func (b *Bot) parseLimit(args string) int {
 	parts := strings.Fields(args)
-	for _, p := range parts {
-		if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 100 {
+	// Scan from end — first number found is the limit
+	for i := len(parts) - 1; i >= 0; i-- {
+		if n, err := strconv.Atoi(parts[i]); err == nil && n > 0 && n <= 100 {
 			return n
 		}
 	}
