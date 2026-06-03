@@ -62,8 +62,9 @@ func (tc *TwitterClient) xRequest(apiPath string, params url.Values, result inte
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	// Path for transaction ID generation
-	pathPart := fmt.Sprintf("/i/api/%s", apiPath)
+	// Path for transaction ID generation — must match the full request URL path,
+	// including the /graphql segment, per the XClientTransaction reference.
+	pathPart := fmt.Sprintf("/i/api/graphql/%s", apiPath)
 	transactionID := Generate("GET", pathPart)
 
 	req.Header.Set("authorization", "Bearer "+xBearerToken)
@@ -115,7 +116,7 @@ func (tc *TwitterClient) xPostRequest(apiPath string, body map[string]interface{
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	pathPart := fmt.Sprintf("/i/api/%s", apiPath)
+	pathPart := fmt.Sprintf("/i/api/graphql/%s", apiPath)
 	transactionID := Generate("POST", pathPart)
 
 	req.Header.Set("authorization", "Bearer "+xBearerToken)
