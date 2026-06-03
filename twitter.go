@@ -399,6 +399,7 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 		// Parse entries
 		foundBottom := false
 		var nextCursor string
+		usersThisPage := 0
 
 		for _, inst := range resp.Data.User.Result.Timeline.Timeline.Instructions {
 			if inst.Type == "TimelineAddEntries" || inst.Type == "TimelineAddToModule" {
@@ -431,9 +432,17 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 							ProfileImageURL: u.Avatar.ImageURL,
 							Name:            name,
 						})
+						usersThisPage++
 					}
 				}
 			}
+		}
+
+		// End of the reachable list: X keeps returning a bottom cursor even on empty pages, which
+		// would otherwise loop until maxPages. Stop as soon as a page yields no new followers.
+		if usersThisPage == 0 {
+			fmt.Printf("[followers] Page %d returned no new users, stopping (collected %d)\n", page, len(allUsers))
+			break
 		}
 
 		if foundBottom && nextCursor != "" {

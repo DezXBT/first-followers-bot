@@ -14,6 +14,11 @@ import (
 const (
 	ColorGold    = 0xFFD700
 	ColorBlurple = 0x5865F2
+
+	// maxFirstLimit caps how many followers ".first" can request.
+	maxFirstLimit = 100
+	// discordDescBudget is a safe ceiling for embed description length (hard limit is 4096).
+	discordDescBudget = 3900
 )
 
 type Bot struct {
@@ -79,15 +84,15 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	content := strings.TrimSpace(m.Content)
 
-	// Check for command prefix
+	// Check for command prefix (require a word boundary so ".firstxyz" doesn't match ".first")
 	var command string
 	var args string
-	if strings.HasPrefix(content, b.config.BotPrefix) {
+	if rest, ok := matchPrefix(content, b.config.BotPrefix); ok {
 		command = "first"
-		args = strings.TrimSpace(content[len(b.config.BotPrefix):])
-	} else if strings.HasPrefix(content, b.config.CheckPrefix) {
+		args = rest
+	} else if rest, ok := matchPrefix(content, b.config.CheckPrefix); ok {
 		command = "cek"
-		args = strings.TrimSpace(content[len(b.config.CheckPrefix):])
+		args = rest
 	} else {
 		return
 	}
@@ -111,14 +116,14 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// For .first, extract limit first so we strip the number from args before normalizing the handle
+	// For .first, extract the optional limit and strip it from args before normalizing the handle
 	var handle string
 	var limit int
 	switch command {
 	case "first":
-		limit = b.parseLimit(args)
-		args = b.stripLimit(args)
-		handle = normalizeHandle(args)
+		var cleanArgs string
+		cleanArgs, limit = b.parseFirstArgs(args)
+		handle = normalizeHandle(cleanArgs)
 	default:
 		handle = normalizeHandle(args)
 	}
@@ -144,29 +149,48 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
-// parseLimit extracts a trailing number from args (e.g. ".first handle 30" → 30)
-func (b *Bot) parseLimit(args string) int {
+// parseFirstArgs splits ".first" arguments into a clean handle source and a follower limit.
+// A token is treated as the limit only when it is purely numeric AND there is at least one
+// other (non-numeric) token to serve as the handle — so a numeric-only handle like
+// ".first 12345" is kept as the handle instead of being eaten as a limit.
+// The chosen limit is clamped to [1, maxFirstLimit]; out-of-range numbers fall back to the default.
+func (b *Bot) parseFirstArgs(args string) (handle string, limit int) {
 	parts := strings.Fields(args)
-	// Scan from end — first number found is the limit
-	for i := len(parts) - 1; i >= 0; i-- {
-		if n, err := strconv.Atoi(parts[i]); err == nil && n > 0 && n <= 100 {
-			return n
+	limit = b.config.FirstFollowersLimit
+
+	// Only look for a limit when there's more than one token (a handle plus a number).
+	if len(parts) > 1 {
+		for i := len(parts) - 1; i >= 0; i-- {
+			n, err := strconv.Atoi(parts[i])
+			if err != nil {
+				continue // not a pure integer (URLs, handles, etc.)
+			}
+			if n >= 1 && n <= maxFirstLimit {
+				limit = n
+			}
+			// Strip the numeric token regardless of range so it never leaks into the handle.
+			parts = append(parts[:i], parts[i+1:]...)
+			break
 		}
 	}
-	return b.config.FirstFollowersLimit
+
+	return strings.TrimSpace(strings.Join(parts, " ")), limit
 }
 
-// stripLimit removes the trailing standalone number (limit) from args so normalizeHandle gets a clean handle.
-// Only strips tokens that are purely numeric (won't strip numbers embedded in URLs).
-func (b *Bot) stripLimit(args string) string {
-	parts := strings.Fields(args)
-	for i := len(parts) - 1; i >= 0; i-- {
-		if _, err := strconv.Atoi(parts[i]); err == nil && !strings.Contains(parts[i], "/") && !strings.Contains(parts[i], ":") {
-			parts = append(parts[:i], parts[i+1:]...)
-			return strings.TrimSpace(strings.Join(parts, " "))
+// matchPrefix reports whether content invokes the given command prefix, requiring the prefix to
+// be followed by whitespace or end-of-string (so ".firstxyz" does not trigger ".first").
+// It returns the trimmed argument string that follows the prefix.
+func matchPrefix(content, prefix string) (string, bool) {
+	if content == prefix {
+		return "", true
+	}
+	if strings.HasPrefix(content, prefix) {
+		rest := content[len(prefix):]
+		if r := []rune(rest)[0]; r == ' ' || r == '\t' || r == '\n' {
+			return strings.TrimSpace(rest), true
 		}
 	}
-	return args
+	return "", false
 }
 
 func (b *Bot) isChannelAllowed(channelID, command string) bool {
@@ -231,11 +255,13 @@ func (b *Bot) setCooldown(userID string) {
 
 // handleFirstCommand handles the .first command — deep crawl followers, find earliest N
 func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreate, handle string, limit int) {
-	// Cooldown check
+	// Cooldown check — set immediately on entry so a slow crawl can't be spammed into
+	// many concurrent expensive crawls before it finishes.
 	if onCooldown, remaining := b.checkCooldown(m.Author.ID); onCooldown {
 		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("⏳ Cooldown active. Please wait %s.", remaining.Round(time.Second)))
 		return
 	}
+	b.setCooldown(m.Author.ID)
 
 	// Send initial "analyzing" message
 	msg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("🔍 Analyzing @%s...", handle))
@@ -271,22 +297,24 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 	if err != nil {
 		close(done)
 		s.ChannelMessageEdit(m.ChannelID, msg.ID, fmt.Sprintf("❌ Failed to find @%s: %v", handle, err))
-		b.setCooldown(m.Author.ID)
 		return
 	}
 
-	// Step 2: Deep crawl ALL followers (X returns newest first, so last page = first followers)
-	// Auto-calculate pages from follower count: ceil(followers_count / 50)
+	// Step 2: Deep crawl followers (X returns newest first, so the last reachable page = first followers).
+	// Auto-calculate pages from follower count: ceil(followers_count / 50), capped by DeepMaxPages so
+	// huge accounts don't trigger an effectively endless, rate-limited crawl.
 	totalPages := (user.FollowersCount + 49) / 50
 	if totalPages < 1 {
 		totalPages = 1
+	}
+	if b.config.DeepMaxPages > 0 && totalPages > b.config.DeepMaxPages {
+		totalPages = b.config.DeepMaxPages
 	}
 	followers, err := b.twitter.GetFollowers(user.ID, totalPages, b.config.DeepDelayMs)
 	close(done)
 
 	if err != nil {
 		s.ChannelMessageEdit(m.ChannelID, msg.ID, fmt.Sprintf("❌ Failed to fetch followers for @%s: %v", handle, err))
-		b.setCooldown(m.Author.ID)
 		return
 	}
 
@@ -320,8 +348,10 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 		requester = m.Member.Nick
 	}
 	embed := b.buildFollowersEmbed(handle, user.Name, user.FollowersCount, user.ProfileImageURL, topN, elapsed, requester, m.Author.AvatarURL("400x400"))
-	s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed)
-	b.setCooldown(m.Author.ID)
+	if _, err := s.ChannelMessageEditEmbed(m.ChannelID, msg.ID, embed); err != nil {
+		fmt.Printf("[first] ERROR edit embed for @%s: %v\n", handle, err)
+		s.ChannelMessageEdit(m.ChannelID, msg.ID, fmt.Sprintf("❌ Could not render result for @%s: %v", handle, err))
+	}
 }
 
 // handleCekCommand handles the .cek command — parallel fetch from Frontrun + X GraphQL
@@ -415,26 +445,35 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 	}
 }
 
-// buildFollowersEmbed builds the gold embed for the .first command result
+// buildFollowersEmbed builds the gold embed for the .first command result.
+// The follower list is rendered as a numbered list inside the description rather than as embed
+// fields: Discord caps embeds at 25 fields, so a ".first <handle> 30" (or any N > 25) would
+// otherwise be rejected with HTTP 400. The list is also truncated to stay within Discord's
+// description character limit.
 func (b *Bot) buildFollowersEmbed(handle string, name string, followersCount int, profileImageURL string, topN []XUser, elapsed time.Duration, requestedBy string, requesterAvatarURL string) *discordgo.MessageEmbed {
-	description := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:",
+	header := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:\n",
 		name, handle, handle, formatNumber(followersCount), len(topN))
 
-	var fields []*discordgo.MessageEmbedField
+	var sb strings.Builder
+	sb.WriteString(header)
+	shown := 0
 	for i, f := range topN {
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:   fmt.Sprintf("%d.", i+1),
-			Value:  fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers",
-				f.Name, f.ScreenName, f.ScreenName, formatNumber(f.FollowersCount)),
-		})
+		line := fmt.Sprintf("%d. %s ([@%s](https://x.com/%s)) — %s followers\n",
+			i+1, f.Name, f.ScreenName, f.ScreenName, formatNumber(f.FollowersCount))
+		// Stop before exceeding the description budget so Discord never rejects the embed.
+		if sb.Len()+len(line) > discordDescBudget {
+			sb.WriteString(fmt.Sprintf("…and %d more (list truncated to fit).", len(topN)-shown))
+			break
+		}
+		sb.WriteString(line)
+		shown++
 	}
 
 	footer := b.makeFooter(requestedBy, requesterAvatarURL)
 	embed := &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("🏆 %s", name),
-		Description: description,
+		Description: sb.String(),
 		Color:       ColorGold,
-		Fields:      fields,
 		Footer:      footer,
 	}
 
@@ -623,13 +662,6 @@ func normalizeHandle(input string) string {
 		handle = parts[len(parts)-1]
 	}
 	return strings.TrimSpace(handle)
-}
-
-func parseCommand(content, prefix string) (string, bool) {
-	if strings.HasPrefix(content, prefix) {
-		return strings.TrimSpace(content[len(prefix):]), true
-	}
-	return "", false
 }
 
 func formatNumber(n int) string {
