@@ -457,7 +457,7 @@ func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate,
 // HTTP 400. Because each embed description is also capped at 4096 chars, the list is paginated
 // across multiple embeds (sent as separate messages) so large limits like ".first 100" show fully.
 func (b *Bot) buildFollowersEmbeds(handle string, name string, followersCount int, profileImageURL string, topN []XUser, requestedBy string, requesterAvatarURL string) []*discordgo.MessageEmbed {
-	header := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nOldest %d followers:\n",
+	header := fmt.Sprintf("%s ([@%s](https://x.com/%s)) — %s followers\n\nFirst %d followers:\n",
 		name, handle, handle, formatNumber(followersCount), len(topN))
 
 	// Split entries into chunks that each stay within the per-embed description budget.
