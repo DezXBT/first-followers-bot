@@ -297,6 +297,8 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 	cursor := ""
 	page := 0
 
+	fmt.Printf("[followers] Starting crawl: userID=%s, maxPages=%d, delay=%dms\n", userID, maxPages, delayMs)
+
 	for page < maxPages {
 		variables := map[string]interface{}{
 			"userId":            userID,
@@ -441,6 +443,11 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 		}
 
 		page++
+
+		if page%5 == 0 || page >= maxPages {
+			fmt.Printf("[followers] Page %d/%d done, collected %d users so far\n", page, maxPages, len(allUsers))
+		}
+
 		if delayMs > 0 && page < maxPages {
 			time.Sleep(time.Duration(delayMs) * time.Millisecond)
 		}

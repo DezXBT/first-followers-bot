@@ -129,7 +129,16 @@ func (b *Bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	switch command {
 	case "first":
-		b.handleFirstCommand(s, m, handle, limit)
+		limit := limit // capture for goroutine
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[PANIC] handleFirstCommand: %v\n", r)
+					s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Internal error for @%s. Please try again.", handle))
+				}
+			}()
+			b.handleFirstCommand(s, m, handle, limit)
+		}()
 	case "cek":
 		b.handleCekCommand(s, m, handle)
 	}
