@@ -230,8 +230,18 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 		return
 	}
 
-	// Step 2: Deep crawl followers
-	followers, err := b.twitter.GetFollowers(user.ID, b.config.DeepMaxPages, b.config.DeepDelayMs)
+	// Step 2: Deep crawl ALL followers (X returns newest first, so last page = first followers)
+	// Calculate pages needed: ceil(followers_count / 50)
+	totalPages := (user.FollowersCount + 49) / 50
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	maxPages := totalPages
+	// Cap at 100 pages (5000 followers) to avoid rate limits
+	if maxPages > 100 {
+		maxPages = 100
+	}
+	followers, err := b.twitter.GetFollowers(user.ID, maxPages, b.config.DeepDelayMs)
 	close(done)
 
 	if err != nil {
