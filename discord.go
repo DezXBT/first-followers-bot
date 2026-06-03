@@ -373,7 +373,7 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, history []UsernameHi
 			return history[i].ChangedAt < history[j].ChangedAt
 		})
 		for _, h := range history {
-			description += fmt.Sprintf("• **@%s** — %s\n", h.Username, h.ChangedAt)
+			description += fmt.Sprintf("• **@%s** — %s\n", h.OldUsername, h.ChangedAt)
 		}
 	}
 

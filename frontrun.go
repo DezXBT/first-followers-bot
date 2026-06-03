@@ -9,9 +9,8 @@ import (
 )
 
 type UsernameHistoryEntry struct {
-	Username    string `json:"username"`
-	ChangedAt   string `json:"changed_at"`
-	ScreenName  string `json:"screen_name"`
+	OldUsername string `json:"oldTwitterUsername"`
+	ChangedAt   string `json:"changedAt"`
 }
 
 type FrontrunClient struct {
@@ -70,35 +69,18 @@ func (fc *FrontrunClient) GetUsernameHistory(handle string) ([]UsernameHistoryEn
 		return nil, err
 	}
 
-	// Try to parse as array first, then as object with data field
-	var entries []UsernameHistoryEntry
-	if err := json.Unmarshal(body, &entries); err == nil {
-		return entries, nil
+	var resp struct {
+		Data struct {
+			UsernameHistory []UsernameHistoryEntry `json:"usernameHistory"`
+		} `json:"data"`
 	}
-
-	var wrapper struct {
-		Data []UsernameHistoryEntry `json:"data"`
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse username history: %w", err)
 	}
-	if err := json.Unmarshal(body, &wrapper); err != nil {
-		// Try as raw interface
-		var raw interface{}
-		if err2 := json.Unmarshal(body, &raw); err2 != nil {
-			return nil, fmt.Errorf("parse username history: %w", err)
-		}
-		// If it's an array, try to re-extract
-		if arr, ok := raw.([]interface{}); ok {
-			for _, item := range arr {
-				itemJSON, _ := json.Marshal(item)
-				var entry UsernameHistoryEntry
-				if json.Unmarshal(itemJSON, &entry) == nil {
-					entries = append(entries, entry)
-				}
-			}
-			return entries, nil
-		}
-		return nil, fmt.Errorf("unexpected response format for username history")
+	if resp.Data.UsernameHistory == nil {
+		return []UsernameHistoryEntry{}, nil
 	}
-	return wrapper.Data, nil
+	return resp.Data.UsernameHistory, nil
 }
 
 // GetUserInfo fetches user info from Frontrun.
