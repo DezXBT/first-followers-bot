@@ -501,6 +501,29 @@ func (b *Bot) buildFollowersEmbeds(handle string, name string, followersCount in
 	return embeds
 }
 
+// dateFormats lists the timestamp layouts the Frontrun/X APIs return, tried in order.
+// RFC3339Nano comes first because bio timestamps look like "2026-03-19T17:02:09.904115+00:00"
+// (fractional seconds + numeric offset) — Go's parser also handles the no-fractional variant.
+var dateFormats = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	time.RubyDate, // "Sat May 01 12:55:14 +0000 2021"
+	"January 2, 2006 3:04 PM",
+	"January 2, 2006",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02 15:04:05",
+}
+
+// parseFlexTime tries each known layout and returns the first successful parse.
+func parseFlexTime(s string) (time.Time, bool) {
+	for _, f := range dateFormats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // buildUsernameHistoryEmbed builds the embed for the .cek command result
 func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, history []UsernameHistoryEntry, bioHistory []BioHistoryEntry, smartFollowers []SmartFollower, about *AboutProfile, requesterAvatarURL string) *discordgo.MessageEmbed {
 	var description string
@@ -519,37 +542,16 @@ func (b *Bot) buildUsernameHistoryEmbed(requestedBy string, handle string, histo
 		return string(result)
 	}
 
-	// Try to parse date strings into Discord timestamps
+	// Parse flexible date strings into Discord timestamps (auto-localized per viewer).
 	toDiscordTS := func(dateStr string) string {
-		// Try various date formats
-		formats := []string{
-			time.RubyDate, // "Sat May 01 12:55:14 +0000 2021"
-			"January 2, 2006 3:04 PM",
-			"January 2, 2006",
-			"2006-01-02T15:04:05Z",
-			"2006-01-02 15:04:05",
+		if t, ok := parseFlexTime(dateStr); ok {
+			return fmt.Sprintf("<t:%d:f>", t.Unix())
 		}
-		for _, f := range formats {
-			t, err := time.Parse(f, dateStr)
-			if err == nil {
-				return fmt.Sprintf("<t:%d:f>", t.Unix())
-			}
-		}
-		return dateStr // fallback
+		return dateStr // fallback: show raw
 	}
 	toDiscordDate := func(dateStr string) string {
-		formats := []string{
-			time.RubyDate,
-			"January 2, 2006 3:04 PM",
-			"January 2, 2006",
-			"2006-01-02T15:04:05Z",
-			"2006-01-02 15:04:05",
-		}
-		for _, f := range formats {
-			t, err := time.Parse(f, dateStr)
-			if err == nil {
-				return fmt.Sprintf("<t:%d:D>", t.Unix())
-			}
+		if t, ok := parseFlexTime(dateStr); ok {
+			return fmt.Sprintf("<t:%d:D>", t.Unix())
 		}
 		return dateStr
 	}

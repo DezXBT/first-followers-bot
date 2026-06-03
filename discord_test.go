@@ -67,6 +67,24 @@ func TestLinkifyMentions(t *testing.T) {
 	}
 }
 
+func TestParseFlexTime(t *testing.T) {
+	// The bio timestamp format that previously rendered raw.
+	shouldParse := []string{
+		"2026-03-19T17:02:09.904115+00:00",
+		"2026-04-08T06:49:07.461474+00:00",
+		"2006-01-02T15:04:05Z",
+		"Sat May 01 12:55:14 +0000 2021",
+	}
+	for _, s := range shouldParse {
+		if _, ok := parseFlexTime(s); !ok {
+			t.Errorf("parseFlexTime(%q) failed to parse", s)
+		}
+	}
+	if _, ok := parseFlexTime("not a date"); ok {
+		t.Errorf("parseFlexTime(\"not a date\") should fail")
+	}
+}
+
 func TestNormalizeHandle(t *testing.T) {
 	cases := map[string]string{
 		"@elonmusk":                    "elonmusk",
