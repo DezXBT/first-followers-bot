@@ -568,8 +568,12 @@ func normalizeHandle(input string) string {
 	handle = strings.TrimPrefix(handle, "@")
 	handle = strings.TrimPrefix(handle, "https://x.com/")
 	handle = strings.TrimPrefix(handle, "https://twitter.com/")
+	// Strip query params first (?s=21, ?ref=xxx, etc)
+	if idx := strings.Index(handle, "?"); idx != -1 {
+		handle = handle[:idx]
+	}
 	handle = strings.TrimRight(handle, "/")
-	// Extract just the handle from URLs with paths
+	// Extract just the handle from URLs with paths (e.g. /status/123)
 	if parts := strings.Split(handle, "/"); len(parts) > 0 {
 		handle = parts[len(parts)-1]
 	}
