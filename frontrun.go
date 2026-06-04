@@ -19,22 +19,22 @@ type BioHistoryEntry struct {
 }
 
 type SmartFollower struct {
-	TwitterID          string `json:"twitterId"`
-	Name               string `json:"name"`
-	Twitter            string `json:"twitter"`
-	Bio                string `json:"bio"`
-	ProfilePhoto       string `json:"profilePhoto"`
-	FollowersCount     int    `json:"followersCount"`
-	SmartFollowersCount int   `json:"smartFollowersCount"`
-	FollowedAt         string `json:"followedAt"`
+	TwitterID           string `json:"twitterId"`
+	Name                string `json:"name"`
+	Twitter             string `json:"twitter"`
+	Bio                 string `json:"bio"`
+	ProfilePhoto        string `json:"profilePhoto"`
+	FollowersCount      int    `json:"followersCount"`
+	SmartFollowersCount int    `json:"smartFollowersCount"`
+	FollowedAt          string `json:"followedAt"`
 }
 
 type FrontrunClient struct {
-	baseURL     string
-	token       string
-	clientVer   string
-	clientLang  string
-	httpClient  *http.Client
+	baseURL    string
+	token      string
+	clientVer  string
+	clientLang string
+	httpClient *http.Client
 }
 
 func NewFrontrunClient(baseURL, token, clientVer, clientLang string) *FrontrunClient {

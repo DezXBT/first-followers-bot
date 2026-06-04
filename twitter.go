@@ -6,14 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	xBaseURL        = "https://x.com/i/api/graphql"
-	xBearerToken    = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+	xBaseURL         = "https://x.com/i/api/graphql"
+	xBearerToken     = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 	userByScreenHash = "IGgvgiOx4QZndDHuD3x9TQ"
 	aboutAccountHash = "zs_jFPFT78rBpXv9Z3U2YQ"
 )
@@ -46,171 +46,183 @@ type AboutProfile struct {
 type TwitterClient struct {
 	pool       *CookiePool
 	httpClient *http.Client
+
+	mu            sync.Mutex // guards followersHash (shared across concurrent .first crawls)
 	followersHash string
 }
 
 func NewTwitterClient(pool *CookiePool) *TwitterClient {
 	return &TwitterClient{
-		pool:       pool,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		pool:          pool,
+		httpClient:    &http.Client{Timeout: 30 * time.Second},
 		followersHash: followersHashes[0],
 	}
 }
 
+func (tc *TwitterClient) getFollowersHash() string {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	return tc.followersHash
+}
+
+func (tc *TwitterClient) setFollowersHash(h string) {
+	tc.mu.Lock()
+	tc.followersHash = h
+	tc.mu.Unlock()
+}
+
+// authAttempts returns how many times an auth-failing request should be retried:
+// once per cookie in the pool, so a fully-expired pool fails fast instead of looping forever.
+func (tc *TwitterClient) authAttempts() int {
+	if n := tc.pool.Len(); n > 1 {
+		return n
+	}
+	return 1
+}
+
 func (tc *TwitterClient) xRequest(apiPath string, params url.Values, result interface{}) error {
-	cookie := tc.pool.Next()
 	u := fmt.Sprintf("%s/%s?%s", xBaseURL, apiPath, params.Encode())
-
-	req, err := http.NewRequest("GET", u, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-
-	// Path for transaction ID generation
 	pathPart := fmt.Sprintf("/i/api/%s", apiPath)
-	transactionID := Generate("GET", pathPart)
 
-	req.Header.Set("authorization", "Bearer "+xBearerToken)
-	req.Header.Set("x-twitter-auth-type", "OAuth2Session")
-	req.Header.Set("x-twitter-active-user", "yes")
-	req.Header.Set("x-csrf-token", cookie.Ct0)
-	req.Header.Set("cookie", fmt.Sprintf("auth_token=%s; ct0=%s", cookie.AuthToken, cookie.Ct0))
-	req.Header.Set("x-twitter-client-language", "en")
-	req.Header.Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
-	if transactionID != "" {
-		req.Header.Set("x-client-transaction-id", transactionID)
-	}
+	var lastErr error
+	for attempt := 0; attempt < tc.authAttempts(); attempt++ {
+		cookie := tc.pool.Next()
 
-	resp, err := tc.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read body: %w", err)
-	}
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		// Try rotating cookies
-		if tc.pool.Len() > 1 {
-			cookie = tc.pool.Rotate()
-			return tc.xRequest(apiPath, params, result)
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			return fmt.Errorf("create request: %w", err)
 		}
-		return fmt.Errorf("auth error %d: %s", resp.StatusCode, string(body))
-	}
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, u, string(body))
-	}
+		transactionID := Generate("GET", pathPart)
+		req.Header.Set("authorization", "Bearer "+xBearerToken)
+		req.Header.Set("x-twitter-auth-type", "OAuth2Session")
+		req.Header.Set("x-twitter-active-user", "yes")
+		req.Header.Set("x-csrf-token", cookie.Ct0)
+		req.Header.Set("cookie", fmt.Sprintf("auth_token=%s; ct0=%s", cookie.AuthToken, cookie.Ct0))
+		req.Header.Set("x-twitter-client-language", "en")
+		req.Header.Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
+		if transactionID != "" {
+			req.Header.Set("x-client-transaction-id", transactionID)
+		}
 
-	// Debug: dump raw response for UserByScreenName
-	if strings.Contains(apiPath, "UserByScreenName") {
-		os.WriteFile("/tmp/getuser_raw.json", body, 0644)
-		fmt.Printf("[xRequest] Raw response saved (%d bytes)\n", len(body))
-	}
+		resp, err := tc.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("http request: %w", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("read body: %w", err)
+		}
 
-	return json.Unmarshal(body, result)
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			// Auth failed: rotate to the next cookie and retry, bounded by authAttempts.
+			lastErr = fmt.Errorf("auth error %d: %s", resp.StatusCode, string(body))
+			continue
+		}
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, u, string(body))
+		}
+		return json.Unmarshal(body, result)
+	}
+	return lastErr
 }
 
 // xPostRequest sends a POST request to the Twitter GraphQL API.
 func (tc *TwitterClient) xPostRequest(apiPath string, body map[string]interface{}, result interface{}) error {
-	cookie := tc.pool.Next()
 	u := fmt.Sprintf("%s/%s", xBaseURL, apiPath)
-
-	bodyJSON, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", u, strings.NewReader(string(bodyJSON)))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-
 	pathPart := fmt.Sprintf("/i/api/%s", apiPath)
-	transactionID := Generate("POST", pathPart)
+	bodyJSON, _ := json.Marshal(body)
 
-	req.Header.Set("authorization", "Bearer "+xBearerToken)
-	req.Header.Set("x-twitter-auth-type", "OAuth2Session")
-	req.Header.Set("x-twitter-active-user", "yes")
-	req.Header.Set("x-csrf-token", cookie.Ct0)
-	req.Header.Set("cookie", fmt.Sprintf("auth_token=%s; ct0=%s", cookie.AuthToken, cookie.Ct0))
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("x-twitter-client-language", "en")
-	req.Header.Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
-	if transactionID != "" {
-		req.Header.Set("x-client-transaction-id", transactionID)
-	}
+	var lastErr error
+	for attempt := 0; attempt < tc.authAttempts(); attempt++ {
+		cookie := tc.pool.Next()
 
-	resp, err := tc.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read body: %w", err)
-	}
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		if tc.pool.Len() > 1 {
-			cookie = tc.pool.Rotate()
-			return tc.xPostRequest(apiPath, body, result)
+		req, err := http.NewRequest("POST", u, strings.NewReader(string(bodyJSON)))
+		if err != nil {
+			return fmt.Errorf("create request: %w", err)
 		}
-		return fmt.Errorf("auth error %d: %s", resp.StatusCode, string(respBody))
-	}
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, u, string(respBody))
-	}
+		transactionID := Generate("POST", pathPart)
+		req.Header.Set("authorization", "Bearer "+xBearerToken)
+		req.Header.Set("x-twitter-auth-type", "OAuth2Session")
+		req.Header.Set("x-twitter-active-user", "yes")
+		req.Header.Set("x-csrf-token", cookie.Ct0)
+		req.Header.Set("cookie", fmt.Sprintf("auth_token=%s; ct0=%s", cookie.AuthToken, cookie.Ct0))
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("x-twitter-client-language", "en")
+		req.Header.Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36")
+		if transactionID != "" {
+			req.Header.Set("x-client-transaction-id", transactionID)
+		}
 
-	return json.Unmarshal(respBody, result)
+		resp, err := tc.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("http request: %w", err)
+		}
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("read body: %w", err)
+		}
+
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			lastErr = fmt.Errorf("auth error %d: %s", resp.StatusCode, string(respBody))
+			continue
+		}
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, u, string(respBody))
+		}
+		return json.Unmarshal(respBody, result)
+	}
+	return lastErr
 }
 func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 	variables := map[string]interface{}{
-		"screen_name":                  screenName,
-		"withSafetyModeUserFields":     true,
+		"screen_name":              screenName,
+		"withSafetyModeUserFields": true,
 	}
 	features := map[string]interface{}{
-		"rweb_tipjar_consumption_enabled":                                     true,
-		"responsive_web_graphql_exclude_directive_enabled":                    true,
-		"verified_phone_label_enabled":                                        false,
-		"creator_subscriptions_tweet_preview_api_enabled":                     true,
-		"responsive_web_graphql_timeline_navigation_enabled":                  true,
-		"responsive_web_graphql_skip_user_profile_image_extensions_enabled":   false,
-		"communities_web_enable_tweet_community_results_fetch":                true,
-		"c9s_tweet_anatomy_moderator_badge_enabled":                           true,
-		"articles_preview_enabled":                                            true,
-		"tweetypie_unmention_optimization_enabled":                            true,
-		"responsive_web_edit_tweet_api_enabled":                               true,
-		"graphql_is_translatable_rweb_tweet_is_translatable_enabled":          true,
-		"view_counts_everywhere_api_enabled":                                  true,
-		"longform_notetweets_consumption_enabled":                             true,
-		"responsive_web_twitter_article_tweet_consumption_enabled":            true,
-		"tweet_awards_web_tipping_enabled":                                    false,
-		"creator_subscriptions_quote_tweet_preview_enabled":                   false,
-		"freedom_of_speech_not_reach_fetch_enabled":                           true,
-		"standardized_nudges_misinfo":                                         true,
+		"rweb_tipjar_consumption_enabled":                                         true,
+		"responsive_web_graphql_exclude_directive_enabled":                        true,
+		"verified_phone_label_enabled":                                            false,
+		"creator_subscriptions_tweet_preview_api_enabled":                         true,
+		"responsive_web_graphql_timeline_navigation_enabled":                      true,
+		"responsive_web_graphql_skip_user_profile_image_extensions_enabled":       false,
+		"communities_web_enable_tweet_community_results_fetch":                    true,
+		"c9s_tweet_anatomy_moderator_badge_enabled":                               true,
+		"articles_preview_enabled":                                                true,
+		"tweetypie_unmention_optimization_enabled":                                true,
+		"responsive_web_edit_tweet_api_enabled":                                   true,
+		"graphql_is_translatable_rweb_tweet_is_translatable_enabled":              true,
+		"view_counts_everywhere_api_enabled":                                      true,
+		"longform_notetweets_consumption_enabled":                                 true,
+		"responsive_web_twitter_article_tweet_consumption_enabled":                true,
+		"tweet_awards_web_tipping_enabled":                                        false,
+		"creator_subscriptions_quote_tweet_preview_enabled":                       false,
+		"freedom_of_speech_not_reach_fetch_enabled":                               true,
+		"standardized_nudges_misinfo":                                             true,
 		"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": true,
-		"rweb_video_timestamps_enabled":                                       true,
-		"longform_notetweets_rich_text_read_enabled":                          true,
-		"longform_notetweets_inline_media_enabled":                            true,
-		"responsive_web_enhance_cards_enabled":                                false,
-		"responsive_web_twitter_article_notes_tab_enabled":                    true,
-		"subscriptions_verification_info_verified_since_enabled":              true,
-		"subscriptions_verification_info_is_identity_verified_enabled":        true,
-		"highlights_tweets_tab_ui_enabled":                                    true,
-		"profile_label_improvements_pcf_label_in_post_enabled":                true,
-		"hidden_profile_subscriptions_enabled":                                true,
-		"subscriptions_feature_can_gift_premium":                              true,
-		"responsive_web_grok_show_grok_translated_post":                       true,
-		"responsive_web_grok_analyze_post_followups_enabled":                  true,
-		"premium_content_api_read_enabled":                                    true,
-		"responsive_web_grok_image_annotation_enabled":                        true,
-		"responsive_web_grok_share_attachment_enabled":                        true,
-		"responsive_web_grok_analysis_button_from_backend":                    true,
-		"responsive_web_grok_analyze_button_fetch_trends_enabled":             true,
-		"rweb_video_screen_enabled":                                           true,
-		"responsive_web_jetfuel_frame":                                        true,
+		"rweb_video_timestamps_enabled":                                           true,
+		"longform_notetweets_rich_text_read_enabled":                              true,
+		"longform_notetweets_inline_media_enabled":                                true,
+		"responsive_web_enhance_cards_enabled":                                    false,
+		"responsive_web_twitter_article_notes_tab_enabled":                        true,
+		"subscriptions_verification_info_verified_since_enabled":                  true,
+		"subscriptions_verification_info_is_identity_verified_enabled":            true,
+		"highlights_tweets_tab_ui_enabled":                                        true,
+		"profile_label_improvements_pcf_label_in_post_enabled":                    true,
+		"hidden_profile_subscriptions_enabled":                                    true,
+		"subscriptions_feature_can_gift_premium":                                  true,
+		"responsive_web_grok_show_grok_translated_post":                           true,
+		"responsive_web_grok_analyze_post_followups_enabled":                      true,
+		"premium_content_api_read_enabled":                                        true,
+		"responsive_web_grok_image_annotation_enabled":                            true,
+		"responsive_web_grok_share_attachment_enabled":                            true,
+		"responsive_web_grok_analysis_button_from_backend":                        true,
+		"responsive_web_grok_analyze_button_fetch_trends_enabled":                 true,
+		"rweb_video_screen_enabled":                                               true,
+		"responsive_web_jetfuel_frame":                                            true,
 	}
 
 	varsJSON, _ := json.Marshal(variables)
@@ -219,8 +231,6 @@ func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 	params := url.Values{}
 	params.Set("variables", string(varsJSON))
 	params.Set("features", string(featuresJSON))
-
-	path := fmt.Sprintf("UserByScreenName/%s", screenName)
 
 	var resp struct {
 		Data struct {
@@ -247,8 +257,6 @@ func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 			} `json:"user"`
 		} `json:"data"`
 	}
-
-	_ = path // used for path construction in xRequest
 
 	if err := tc.xRequest(fmt.Sprintf("%s/UserByScreenName", userByScreenHash), params, &resp); err != nil {
 		return nil, err
@@ -293,29 +301,32 @@ func (tc *TwitterClient) GetUser(screenName string) (*XUser, error) {
 // GetFollowers fetches followers for a user using cursor pagination.
 // Returns followers in the order they come (newest first since X returns reverse-chron).
 func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]XUser, error) {
+	const maxRateLimitRetries = 5
+
 	var allUsers []XUser
 	cursor := ""
 	page := 0
+	rateLimitRetries := 0
 
 	fmt.Printf("[followers] Starting crawl: userID=%s, maxPages=%d, delay=%dms\n", userID, maxPages, delayMs)
 
 	for page < maxPages {
 		variables := map[string]interface{}{
-			"userId":            userID,
-			"count":             50,
+			"userId":                 userID,
+			"count":                  50,
 			"includePromotedContent": false,
 		}
 		if cursor != "" {
 			variables["cursor"] = cursor
 		}
 		features := map[string]interface{}{
-			"rweb_tipjar_consumption_enabled":                                  true,
-			"responsive_web_graphql_exclude_directive_enabled":                 true,
-			"verified_phone_label_enabled":                                     false,
-			"responsive_web_graphql_timeline_navigation_enabled":               true,
+			"rweb_tipjar_consumption_enabled":                                   true,
+			"responsive_web_graphql_exclude_directive_enabled":                  true,
+			"verified_phone_label_enabled":                                      false,
+			"responsive_web_graphql_timeline_navigation_enabled":                true,
 			"responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-			"creator_subscriptions_tweet_preview_api_enabled":                  true,
-			"highlights_tweets_tab_ui_enabled":                                 true,
+			"creator_subscriptions_tweet_preview_api_enabled":                   true,
+			"highlights_tweets_tab_ui_enabled":                                  true,
 		}
 
 		reqBody := map[string]interface{}{
@@ -369,11 +380,16 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 			} `json:"data"`
 		}
 
-		apiPath := fmt.Sprintf("%s/Followers", tc.followersHash)
+		apiPath := fmt.Sprintf("%s/Followers", tc.getFollowersHash())
 		if err := tc.xPostRequest(apiPath, reqBody, &resp); err != nil {
-			// Rate limit: wait and retry same page
+			// Rate limit: wait and retry the same page, but give up after a bounded number of
+			// attempts so a persistently throttled account can't hang the crawl forever.
 			if strings.Contains(err.Error(), "429") {
-				fmt.Printf("[rate-limit] Page %d hit 429, waiting 60s...\n", page)
+				rateLimitRetries++
+				if rateLimitRetries > maxRateLimitRetries {
+					return allUsers, fmt.Errorf("followers page %d: rate-limited after %d retries: %w", page, maxRateLimitRetries, err)
+				}
+				fmt.Printf("[rate-limit] Page %d hit 429 (retry %d/%d), waiting 60s...\n", page, rateLimitRetries, maxRateLimitRetries)
 				time.Sleep(60 * time.Second)
 				continue // retry same page
 			}
@@ -381,7 +397,7 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 			if page == 0 {
 				recovered := false
 				for _, h := range followersHashes[1:] {
-					tc.followersHash = h
+					tc.setFollowersHash(h)
 					apiPath2 := fmt.Sprintf("%s/Followers", h)
 					if err2 := tc.xPostRequest(apiPath2, reqBody, &resp); err2 == nil {
 						recovered = true
@@ -394,6 +410,9 @@ func (tc *TwitterClient) GetFollowers(userID string, maxPages, delayMs int) ([]X
 			} else {
 				return allUsers, fmt.Errorf("followers page %d: %w", page, err)
 			}
+		} else {
+			// Successful page resets the rate-limit budget.
+			rateLimitRetries = 0
 		}
 
 		// Parse entries
@@ -471,9 +490,9 @@ func (tc *TwitterClient) GetAboutAccount(screenName string) (*AboutProfile, erro
 		"screenName": screenName,
 	}
 	features := map[string]interface{}{
-		"responsive_web_graphql_exclude_directive_enabled":                 true,
-		"verified_phone_label_enabled":                                     false,
-		"responsive_web_graphql_timeline_navigation_enabled":               true,
+		"responsive_web_graphql_exclude_directive_enabled":                  true,
+		"verified_phone_label_enabled":                                      false,
+		"responsive_web_graphql_timeline_navigation_enabled":                true,
 		"responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
 	}
 
@@ -489,8 +508,8 @@ func (tc *TwitterClient) GetAboutAccount(screenName string) (*AboutProfile, erro
 			UserResultByScreenName struct {
 				Result struct {
 					AboutProfile struct {
-						AccountBasedIn string `json:"account_based_in"`
-						Source         string `json:"source"`
+						AccountBasedIn  string `json:"account_based_in"`
+						Source          string `json:"source"`
 						UsernameChanges struct {
 							Count string `json:"count"`
 						} `json:"username_changes"`

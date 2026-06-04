@@ -207,7 +207,7 @@ func (tg *TransactionGenerator) computeAnimationKey(html string) (string, error)
 		frameTime *= tg.keyBytes[idx] % 16
 	}
 
-	frameTimeF := jsRound(float64(frameTime) / 10.0) * 10
+	frameTimeF := jsRound(float64(frameTime)/10.0) * 10
 	targetTime := float64(frameTimeF) / 4096.0
 
 	frameRow := selectedFrame[rowIdx]

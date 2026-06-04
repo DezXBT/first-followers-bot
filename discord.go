@@ -23,14 +23,14 @@ const (
 )
 
 type Bot struct {
-	session        *discordgo.Session
-	config         *Config
-	twitter        *TwitterClient
-	frontrun       *FrontrunClient
-	cookiePool     *CookiePool
-	cooldowns      map[string]time.Time
-	cooldownMu     sync.Mutex
-	timezone       *time.Location
+	session    *discordgo.Session
+	config     *Config
+	twitter    *TwitterClient
+	frontrun   *FrontrunClient
+	cookiePool *CookiePool
+	cooldowns  map[string]time.Time
+	cooldownMu sync.Mutex
+	timezone   *time.Location
 }
 
 func NewBot(cfg *Config) (*Bot, error) {
@@ -363,6 +363,15 @@ func (b *Bot) handleFirstCommand(s *discordgo.Session, m *discordgo.MessageCreat
 
 // handleCekCommand handles the .cek command — parallel fetch from Frontrun + X GraphQL
 func (b *Bot) handleCekCommand(s *discordgo.Session, m *discordgo.MessageCreate, handle string) {
+	// discordgo dispatches handlers on their own goroutine; an unrecovered panic here would take
+	// down the whole bot, so guard it the same way handleFirstCommand does.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[PANIC] handleCekCommand: %v\n", r)
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Internal error for @%s. Please try again.", handle))
+		}
+	}()
+
 	msg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("🔍 Checking @%s...", handle))
 	if err != nil {
 		return

@@ -30,9 +30,9 @@ type Config struct {
 	FrontrunClientLanguage string
 
 	// Deep crawl
-	DeepPageSize    int
-	DeepMaxPages    int
-	DeepDelayMs     int
+	DeepPageSize     int
+	DeepMaxPages     int
+	DeepDelayMs      int
 	ProgressUpdateMs int
 
 	FirstCooldownMs int
@@ -49,23 +49,23 @@ func LoadConfig() (*Config, error) {
 	cfg := &Config{
 		DiscordToken:           os.Getenv("DISCORD_BOT_TOKEN"),
 		AllowedGuildIDs:        splitComma(os.Getenv("ALLOWED_GUILD_IDS")),
-		DiscordChannelIDs:     splitComma(os.Getenv("DISCORD_CHANNEL_IDS")),
-		FirstChannelIDs:       splitComma(os.Getenv("FIRST_CHANNEL_IDS")),
-		CheckChannelIDs:       splitComma(os.Getenv("CHECK_CHANNEL_IDS")),
+		DiscordChannelIDs:      splitComma(os.Getenv("DISCORD_CHANNEL_IDS")),
+		FirstChannelIDs:        splitComma(os.Getenv("FIRST_CHANNEL_IDS")),
+		CheckChannelIDs:        splitComma(os.Getenv("CHECK_CHANNEL_IDS")),
 		BotPrefix:              envDefault("BOT_PREFIX", ".first"),
 		CheckPrefix:            envDefault("CHECK_PREFIX", ".cek"),
-		FrontrunBaseURL:       envDefault("FRONTRUN_BASE_URL", "https://loadbalance.frontrun.pro"),
-		FrontrunSessionToken:  os.Getenv("FRONTRUN_SESSION_TOKEN"),
-		FrontrunClientVersion: envDefault("FRONTRUN_CLIENT_VERSION", "0.0.216"),
+		FrontrunBaseURL:        envDefault("FRONTRUN_BASE_URL", "https://loadbalance.frontrun.pro"),
+		FrontrunSessionToken:   os.Getenv("FRONTRUN_SESSION_TOKEN"),
+		FrontrunClientVersion:  envDefault("FRONTRUN_CLIENT_VERSION", "0.0.216"),
 		FrontrunClientLanguage: envDefault("FRONTRUN_CLIENT_LANGUAGE", "EN_US"),
-		DeepPageSize:          envInt("DEEP_PAGE_SIZE", 50),
-		DeepMaxPages:          envInt("DEEP_MAX_PAGES", 200),
-		DeepDelayMs:           envInt("DEEP_DELAY_MS", 1500),
-		ProgressUpdateMs:      envInt("PROGRESS_UPDATE_MS", 15000),
-		FirstCooldownMs:       envInt("FIRST_COOLDOWN_MS", 90000),
-		FirstFollowersLimit:   envInt("FIRST_FOLLOWERS_LIMIT", 20),
-		Timezone:              envDefault("TIMEZONE", "Asia/Jakarta"),
-		LogLevel:              envDefault("LOG_LEVEL", "info"),
+		DeepPageSize:           envInt("DEEP_PAGE_SIZE", 50),
+		DeepMaxPages:           envInt("DEEP_MAX_PAGES", 200),
+		DeepDelayMs:            envInt("DEEP_DELAY_MS", 1500),
+		ProgressUpdateMs:       envInt("PROGRESS_UPDATE_MS", 15000),
+		FirstCooldownMs:        envInt("FIRST_COOLDOWN_MS", 90000),
+		FirstFollowersLimit:    envInt("FIRST_FOLLOWERS_LIMIT", 20),
+		Timezone:               envDefault("TIMEZONE", "Asia/Jakarta"),
+		LogLevel:               envDefault("LOG_LEVEL", "info"),
 	}
 
 	// Parse X cookies — prefer pool vars, fall back to single vars

@@ -33,18 +33,6 @@ func (cp *CookiePool) Next() CookiePair {
 	return cookie
 }
 
-// Current returns the current cookie pair without advancing.
-func (cp *CookiePool) Current() CookiePair {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	return cp.cookies[cp.cursor%len(cp.cookies)]
-}
-
-// Rotate advances the cursor and returns the next cookie (use on auth error).
-func (cp *CookiePool) Rotate() CookiePair {
-	return cp.Next()
-}
-
 // Len returns the number of cookies in the pool.
 func (cp *CookiePool) Len() int {
 	return len(cp.cookies)
